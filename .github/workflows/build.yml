@@ -1,4 +1,4 @@
-# language: yaml, file: .github/workflows/build.yml — MSVC на windows-latest
+# language: yaml, file: .github/workflows/build.yml — MSVC + генерация заголовков + /I src
 name: build-lab-exe
 on: [push, workflow_dispatch]
 
@@ -11,17 +11,64 @@ jobs:
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
 
+      - name: Ensure headers
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path src | Out-Null
+
+          @'
+          #pragma once
+          #include <windows.h>
+          bool CreateBrowserWindow(HINSTANCE hInst);
+          void DestroyBrowserWindow();
+          HWND GetBrowserWindow();
+          '@ | Set-Content -Encoding ascii src\browser.h
+
+          @'
+          #pragma once
+          #include <windows.h>
+          bool  StartVideoPlayer(const wchar_t* path);
+          void  StopVideoPlayer();
+          bool  VideoEnded();
+          '@ | Set-Content -Encoding ascii src\video.h
+
+          @'
+          #pragma once
+          void ShowRedBSOD();
+          '@ | Set-Content -Encoding ascii src\bsod.h
+
+          @'
+          #pragma once
+          #include <windows.h>
+          bool InjectViaAmsi(const wchar_t* targetProc);
+          '@ | Set-Content -Encoding ascii src\inject.h
+
+          @'
+          #pragma once
+          #define ID_BROWSER_WND      1001
+          #define ID_BSOD_WND         1002
+          #define ID_VIDEO_WND        1003
+          #define IDR_PROMO_MP4       2001
+          #define VIDEO_FALLBACK_MS   15000
+          '@ | Set-Content -Encoding ascii src\resource.h
+
+          Write-Host "headers:"; Get-ChildItem src -Filter *.h | Select-Object Name
+
       - name: Build
+        shell: pwsh
         run: |
           cl /nologo /EHsc /std:c++17 /O2 /MT `
              /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN `
+             /I src `
              src\main.cpp src\browser.cpp src\video.cpp src\bsod.cpp src\inject.cpp `
              /link /SUBSYSTEM:WINDOWS `
              mfplat.lib mfuuid.lib ole32.lib user32.lib gdi32.lib advapi32.lib psapi.lib `
              /OUT:lab.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload exe
         uses: actions/upload-artifact@v4
         with:
           name: lab-exe
           path: lab.exe
+          if-no-files-found: error
