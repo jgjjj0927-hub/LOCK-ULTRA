@@ -1,4 +1,4 @@
-// language: C++, file: src/video.cpp — Media Foundation: рендер в окно, конец по ENDED, BSTR, SetUnknown
+// language: C++, file: src/video.cpp — MF Media Engine: HWND-рендер, конец по ENDED, без утечек
 #include "video.h"
 #include "browser.h"
 #include <mfapi.h>
@@ -6,7 +6,7 @@
 #include <mfobjects.h>
 #include <wrl/client.h>
 #include <atomic>
-#include <string>
+#include <cstdio>
 
 using Microsoft::WRL::ComPtr;
 
@@ -18,6 +18,12 @@ static HWND                g_videoWnd  = nullptr;
 static HWND                g_parentWnd = nullptr;
 static std::atomic<bool>   g_ended{false};
 static bool                g_mfUp = false;
+
+static void log_hr(const wchar_t* what, HRESULT hr) {
+    wchar_t buf[256];
+    swprintf_s(buf, L"[lab-video] %s failed: 0x%08X\n", what, (unsigned)hr);
+    OutputDebugStringW(buf);
+}
 
 class EngineNotify : public IMFMediaEngineNotify {
     std::atomic<ULONG> ref{1};
@@ -49,7 +55,6 @@ static LRESULT CALLBACK VideoProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if (m == WM_PAINT) {
         PAINTSTRUCT ps;
         HDC dc = BeginPaint(h, &ps);
-        // фон под видео
         RECT rc; GetClientRect(h, &rc);
         HBRUSH b = CreateSolidBrush(RGB(0,0,0));
         FillRect(dc, &rc, b);
@@ -62,7 +67,8 @@ static LRESULT CALLBACK VideoProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 
 bool StartVideoPlayer(const wchar_t* path) {
     if (!g_mfUp) {
-        if (FAILED(MFStartup(MF_VERSION, MFSTARTUP_FULL))) return false;
+        HRESULT hr = MFStartup(MF_VERSION, MFSTARTUP_FULL);
+        if (FAILED(hr)) { log_hr(L"MFStartup", hr); return false; }
         g_mfUp = true;
     }
 
@@ -74,44 +80,51 @@ bool StartVideoPlayer(const wchar_t* path) {
     if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
 
     g_parentWnd = GetBrowserWindow();
-    if (!g_parentWnd) return false;
+    if (!g_parentWnd) { OutputDebugStringW(L"[lab-video] no browser window\n"); return false; }
 
     int W = GetSystemMetrics(SM_CXSCREEN);
     int H = GetSystemMetrics(SM_CYSCREEN);
     g_videoWnd = CreateWindowExW(0, L"LabVideoWnd", L"",
         WS_CHILD | WS_VISIBLE, 0, 64, W, H - 64,
         g_parentWnd, nullptr, hInst, nullptr);
-    if (!g_videoWnd) return false;
+    if (!g_videoWnd) { OutputDebugStringW(L"[lab-video] CreateWindow failed\n"); return false; }
 
-    if (FAILED(CoCreateInstance(CLSID_MFMediaEngineClassFactory, nullptr, CLSCTX_ALL,
-                                IID_PPV_ARGS(g_factory.GetAddressOf())))) return false;
+    HRESULT hr = CoCreateInstance(CLSID_MFMediaEngineClassFactory, nullptr, CLSCTX_ALL,
+                                  IID_PPV_ARGS(g_factory.GetAddressOf()));
+    if (FAILED(hr)) { log_hr(L"CoCreateInstance", hr); return false; }
 
-    if (FAILED(MFCreateAttributes(g_attrs.GetAddressOf(), 3))) return false;
+    hr = MFCreateAttributes(g_attrs.GetAddressOf(), 2);
+    if (FAILED(hr)) { log_hr(L"MFCreateAttributes", hr); return false; }
 
-    // HWND для рендера — атрибут, не второй аргумент CreateInstance
-    g_attrs->SetUINT32(MF_MEDIA_ENGINE_VIDEO_OUTPUT_FORMAT, MFVideoFormat_RGB32);
-    g_attrs->SetUINT64(MF_MEDIA_ENGINE_PLAYBACK_HWND, (UINT64)(uintptr_t)g_videoWnd);
-    // колбэк — как IUnknown*, не UINT32
-    g_notify.Attach(new EngineNotify());
-    g_attrs->SetUnknown(MF_MEDIA_ENGINE_CALLBACK, g_notify.Get());
+    hr = g_attrs->SetUINT64(MF_MEDIA_ENGINE_PLAYBACK_HWND, (UINT64)(uintptr_t)g_videoWnd);
+    if (FAILED(hr)) { log_hr(L"SetUINT64(HWND)", hr); return false; }
 
-    // флаги создания — 0
-    if (FAILED(g_factory->CreateInstance(0, g_attrs.Get(), g_engine.GetAddressOf()))) return false;
+    // колбэк: ComPtr забирает владение, SetUnknown делает AddRef — баланс без утечки
+    g_notify = new EngineNotify();
+    hr = g_attrs->SetUnknown(MF_MEDIA_ENGINE_CALLBACK, g_notify.Get());
+    if (FAILED(hr)) { log_hr(L"SetUnknown(callback)", hr); return false; }
 
-    // SetSource ждёт BSTR
+    hr = g_factory->CreateInstance(0, g_attrs.Get(), g_engine.GetAddressOf());
+    if (FAILED(hr)) { log_hr(L"CreateInstance", hr); return false; }
+
     BSTR bstr = SysAllocString(path);
     if (!bstr) return false;
-    HRESULT hr = g_engine->SetSource(bstr);
+    hr = g_engine->SetSource(bstr);
     SysFreeString(bstr);
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) { log_hr(L"SetSource", hr); return false; }
 
     g_engine->SetLoop(FALSE);
-    g_engine->Play();
+    hr = g_engine->Play();
+    if (FAILED(hr)) { log_hr(L"Play", hr); return false; }
     return true;
 }
 
 void StopVideoPlayer() {
-    if (g_engine) { g_engine->Pause(); g_engine.Reset(); }
+    if (g_engine) {
+        g_engine->Pause();
+        g_engine->Shutdown();
+        g_engine.Reset();
+    }
     g_notify.Reset();
     g_attrs.Reset();
     g_factory.Reset();
