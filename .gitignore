@@ -1,0 +1,8 @@
+# language: gitignore, file: .gitignore
+*.exe
+*.obj
+*.pdb
+*.ilk
+lab.qcow2
+*.qcow2
+assets/*.mp4
