@@ -1,4 +1,4 @@
-# language: yaml, file: .github/workflows/build.yml — MSVC + генерация заголовков + /I src
+# language: yaml, file: .github/workflows/build.yml — MSVC + генерация заголовков + /I src + oleaut32
 name: build-lab-exe
 on: [push, workflow_dispatch]
 
@@ -62,7 +62,7 @@ jobs:
              /I src `
              src\main.cpp src\browser.cpp src\video.cpp src\bsod.cpp src\inject.cpp `
              /link /SUBSYSTEM:WINDOWS `
-             mfplat.lib mfuuid.lib ole32.lib user32.lib gdi32.lib advapi32.lib psapi.lib `
+             mfplat.lib mfuuid.lib ole32.lib oleaut32.lib user32.lib gdi32.lib advapi32.lib psapi.lib `
              /OUT:lab.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
